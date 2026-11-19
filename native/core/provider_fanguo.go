@@ -219,9 +219,10 @@ func (d *Downloader) fanguoGetOnce(ctx context.Context, base string, query url.V
 		return nil, errors.New("番果返回的数据格式无效")
 	}
 	if row, ok := decoded.(map[string]any); ok {
-		if code := nativeText(row["code"]); code != "" && code != "200" {
+		// MacCMS 采集接口用 code=1 表示成功，部分部署用 code=200；其余视为业务错误。
+		if code := nativeText(row["code"]); code != "" && code != "200" && code != "1" {
 			message := mapString(row, "msg", "message")
-			if message == "" {
+			if message == "" || message == "数据列表" {
 				message = "上游返回错误码 " + code
 			}
 			return nil, errors.New("番果接口错误：" + truncate(message, 120))
