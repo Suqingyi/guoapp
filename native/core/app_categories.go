@@ -20,8 +20,6 @@ type nativeCategory struct {
 var nativeAICategories = []nativeCategory{
 	{ID: "ai-duanju", Name: "AI 短剧"},
 	{ID: "ai-manju", Name: "AI 漫剧"},
-	{ID: "ai-huanlian", Name: "AI 换脸"},
-	{ID: "ai-mogai", Name: "AI 魔改"},
 }
 
 func nativeCatalogKey(source, category string) string {
