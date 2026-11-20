@@ -161,6 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 密码锁切换后可见站源会变，这里把当前站源归一化到仍然可见的站源。
+  /// 只同步本地 UI 状态，不反向写回 store，避免与 setCatalogSource 形成回调循环。
   void _sourcesChanged() {
     if (!mounted) return;
     final visible = widget.store.sources;
@@ -178,20 +179,42 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     final allowed = visible.map((site) => site.id).toSet();
-    if (!wasEmpty &&
-        allowed.contains(_source.id) &&
-        _source.id == widget.store.source) {
+    if (_source.id == widget.store.source && allowed.contains(_source.id)) {
       return;
     }
-    // 当前站源仍可见时保持不动；否则回落到 store 记录的源（可能是分组名）。
-    final target = allowed.contains(_source.id)
-        ? _source
-        : SourceSite.byId(widget.store.source);
-    if (!allowed.contains(target.id) && visible.isNotEmpty) {
-      _changeSource(visible.first);
+    // 当前站源仍可见则保持不动；否则回落到 store 记录的源，仍不可见时取第一个可见源。
+    var target = _source;
+    if (!allowed.contains(target.id)) {
+      final recorded = SourceSite.byId(widget.store.source);
+      target = allowed.contains(recorded.id) ? recorded : visible.first;
+    }
+    if (!wasEmpty && target.id == _source.id && !allowed.contains(target.id)) {
       return;
     }
-    _changeSource(target);
+    _applySourceLocally(target);
+  }
+
+  /// 仅更新本页站源状态并重新加载目录，不写回 store。
+  void _applySourceLocally(SourceSite source) {
+    if (_source.id == source.id) return;
+    _debounce?.cancel();
+    _search.clear();
+    setState(() {
+      _showRecommendations = false;
+      _selectionMode = false;
+      _selectedDramas.clear();
+      _source = source;
+      _allSources = false;
+      _items = [];
+      _hasMore = true;
+      _submittedQuery = '';
+      _error = null;
+    });
+    if (_scroll.hasClients) {
+      _scroll.jumpTo(0);
+    }
+    _load(useCache: true);
+    _loadCategories();
   }
 
   void _catalogUpdated(String source) {

@@ -1226,12 +1226,17 @@ class LocalStore extends ChangeNotifier {
         : null;
     final previousId = _current;
     final previousLocked = locked;
+    // 解锁状态只在本次运行内有效，reload 不应把它清掉。
+    final previousUnlocked = _sourcesUnlocked;
     await preferences.reload();
     _initialize();
     if (_configurationError == null &&
         previousProfiles == _string('profiles') &&
         previousId == _current) {
       _locked = previousLocked;
+      if (_gateEnabled && previousUnlocked) {
+        _sourcesUnlocked = true;
+      }
     } else {
       _epoch++;
     }

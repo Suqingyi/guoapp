@@ -9,6 +9,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,7 +24,10 @@ import (
 )
 
 const (
-	huangdouBaseURL     = "https://tideember.cc"
+	// 主域名已失效（tideember.cc 无 DNS 记录），改用仍可访问的 xqjurgek.top。
+	// 该站 HTTPS 证书自 2026-11-06 起过期未续，请求层已做降级重试。
+	huangdouBaseURL     = "https://xqjurgek.top"
+	huangdouLegacyURL   = "https://tideember.cc"
 	huangdouVersion     = "2.0.0"
 	huangdouDeviceType  = "web"
 	huangdouPlatformKey = "7961beb44246e3012ce228d6b5ced05a"
@@ -33,6 +38,31 @@ type huangdouAPIClient struct {
 	host      string
 	sessionID string
 	deviceID  string
+}
+
+// huangdouRelaxedClient 允许跳过证书校验，仅在黄豆 HTTPS 证书失效时启用。
+// 上游采集站证书过期后常不续签，但服务与接口仍可用；此客户端只对黄豆生效，
+// 不改变其它站源的证书校验策略。
+func huangdouRelaxedClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = &http.Client{}
+	}
+	clone := *base
+	if transport, ok := base.Transport.(*http.Transport); ok && transport != nil {
+		next := transport.Clone()
+		if next.TLSClientConfig == nil {
+			next.TLSClientConfig = &tls.Config{}
+		} else {
+			next.TLSClientConfig = next.TLSClientConfig.Clone()
+		}
+		next.TLSClientConfig.InsecureSkipVerify = true
+		clone.Transport = next
+	} else {
+		clone.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	return &clone
 }
 
 func newHuangdouAPIClient(d *Downloader) *huangdouAPIClient {
@@ -143,11 +173,48 @@ func (c *huangdouAPIClient) call(ctx context.Context, path string, data map[stri
 		if errors.As(lastErr, &apiErr) {
 			return lastErr
 		}
-		if c.host == huangdouBaseURL && c.d.cfg.HuangdouURL == "" {
-			c.host = "https://xqjurgek.top"
+		// 主域名失败后回退到旧域名；用户显式配置过域名时不切换。
+		if c.d.cfg.HuangdouURL == "" {
+			if c.host == huangdouBaseURL {
+				c.host = huangdouLegacyURL
+			} else if c.host == huangdouLegacyURL {
+				c.host = huangdouBaseURL
+			}
 		}
 	}
 	return lastErr
+}
+
+// doCatalog 发送黄豆请求。若因证书失效失败，改用跳过校验的客户端重试一次，
+// 并在成功后记住该主机，避免后续请求重复握手失败。
+func (c *huangdouAPIClient) doCatalog(request *http.Request, timeout time.Duration, prepare func(*http.Request), body []byte) (*http.Response, error) {
+	resp, err := c.d.doPreparedCatalogRequest(request, timeout, prepare)
+	if err == nil || !isCertificateError(err) {
+		return resp, err
+	}
+	clone := request.Clone(request.Context())
+	if body != nil {
+		clone.Body = io.NopCloser(bytes.NewReader(body))
+		clone.ContentLength = int64(len(body))
+	}
+	relaxed := huangdouRelaxedClient(c.d.client)
+	return relaxed.Do(clone)
+}
+
+func isCertificateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "certificate") ||
+		strings.Contains(message, "x509") ||
+		strings.Contains(message, "tls:")
 }
 
 type huangdouAPIError struct {
@@ -233,13 +300,13 @@ func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[
 	req.Header.Set("deviceType", huangdouDeviceType)
 	req.Header.Set("requestId", rid)
 	req.Header.Set("sessionId", c.sessionID)
-	resp, err := c.d.doPreparedCatalogRequest(req, 20*time.Second, func(prepared *http.Request) {
+	resp, err := c.doCatalog(req, 20*time.Second, func(prepared *http.Request) {
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 		signRaw := "Dart|" + c.sessionID + "|" + rid + "|" + timestamp + "|" + path
 		signSum := sha256.Sum256([]byte(signRaw))
 		prepared.Header.Set("time", timestamp)
 		prepared.Header.Set("sign", hex.EncodeToString(signSum[:])+"-"+timestamp)
-	})
+	}, body)
 	if err != nil {
 		return err
 	}
