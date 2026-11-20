@@ -66,8 +66,14 @@ class SourceSite {
     for (final site in values)
       if (unlocked || isPrimary(site.id)) site,
   ];
-  static SourceSite byId(String id) =>
-      allValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
+  /// 按 id 查找站源；[id] 也可能是分组名（如黄果），此时返回该组第一个站源。
+  static SourceSite byId(String id) => allValues.firstWhere(
+    (site) => site.id == id,
+    orElse: () => allValues.firstWhere(
+      (site) => site.groupId == id,
+      orElse: () => hongguo,
+    ),
+  );
 }
 
 class SourceGroup {

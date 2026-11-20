@@ -183,7 +183,15 @@ class _HomeScreenState extends State<HomeScreen> {
         _source.id == widget.store.source) {
       return;
     }
-    _changeSource(SourceSite.byId(widget.store.source));
+    // 当前站源仍可见时保持不动；否则回落到 store 记录的源（可能是分组名）。
+    final target = allowed.contains(_source.id)
+        ? _source
+        : SourceSite.byId(widget.store.source);
+    if (!allowed.contains(target.id) && visible.isNotEmpty) {
+      _changeSource(visible.first);
+      return;
+    }
+    _changeSource(target);
   }
 
   void _catalogUpdated(String source) {
