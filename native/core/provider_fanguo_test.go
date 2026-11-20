@@ -38,8 +38,8 @@ func TestFanguoDramaFromMap(t *testing.T) {
 	}
 }
 
-func TestFanguoChaptersPreferM3U8Line(t *testing.T) {
-	row := decodeFanguoFixture(t, `{"vod_id":9,"vod_name":"测试番","vod_play_from":"jsyun$$$jsm3u8","vod_play_url":"第1集$https://vv.example.test/play/aaa,第2集$https://vv.example.test/play/bbb$$$第1集$https://v.example.test/play/ccc,第2集$https://v.example.test/play/ddd"}`)
+func TestFanguoChaptersPreferRichestLine(t *testing.T) {
+	row := decodeFanguoFixture(t, `{"vod_id":9,"vod_name":"测试番","vod_play_from":"jsyun$$$jsm3u8","vod_play_url":"第1集$https://vv.example.test/play/aaa$$$第1集$https://v.example.test/play/ccc,第2集$https://v.example.test/play/ddd"}`)
 	drama, err := fanguoDramaFromMap(row)
 	if err != nil {
 		t.Fatalf("映射失败: %v", err)
@@ -53,7 +53,7 @@ func TestFanguoChaptersPreferM3U8Line(t *testing.T) {
 	}
 	for _, chapter := range chapters {
 		if !strings.Contains(chapter.ID, "L1E") {
-			t.Fatalf("未优先选择 m3u8 线路: %s", chapter.ID)
+			t.Fatalf("未优先选择集数最全的线路: %s", chapter.ID)
 		}
 		if !strings.HasPrefix(chapter.VideoURL, "fanguo-play://https%3A%2F%2F") {
 			t.Fatalf("播放占位符错误: %s", chapter.VideoURL)
@@ -76,20 +76,46 @@ func TestFanguoCategoryAndIDGuards(t *testing.T) {
 	}
 }
 
-func TestFanguoBaseCandidatesDedupesPreferred(t *testing.T) {
+func TestFanguoMirrorCandidatesDedupesPreferred(t *testing.T) {
 	d := &Downloader{providerHosts: map[string]string{sourceFanguo: "https://www.hongniuzy2.com"}}
-	candidates := d.fanguoBaseCandidates()
-	if len(candidates) != len(fanguoAPIBases) {
+	candidates := d.fanguoMirrorCandidates("")
+	if len(candidates) != len(fanguoMirrors) {
 		t.Fatalf("候选数量错误: %v", candidates)
 	}
-	if candidates[0] != fanguoAPIBases[1] {
-		t.Fatalf("有效域名未排首位: %v", candidates)
+	if candidates[0].base != fanguoMirrors[1].base {
+		t.Fatalf("有效镜像未排首位: %v", candidates)
 	}
 	seen := map[string]bool{}
 	for _, entry := range candidates {
-		if seen[entry] {
+		if seen[entry.base] {
 			t.Fatalf("候选包含重复项: %v", candidates)
 		}
-		seen[entry] = true
+		seen[entry.base] = true
+	}
+}
+
+func TestFanguoMirrorCandidatesFilterByCategory(t *testing.T) {
+	d := &Downloader{providerHosts: map[string]string{}}
+	// 数字分类在所有镜像都可用（走透传），规范分类只保留有映射的镜像。
+	if got := len(d.fanguoMirrorCandidates("9")); got != len(fanguoMirrors) {
+		t.Fatalf("数字分类候选数量错误: %d", got)
+	}
+	for _, id := range []string{"jp", "cn", "us"} {
+		if got := len(d.fanguoMirrorCandidates(id)); got != len(fanguoMirrors) {
+			t.Fatalf("分类 %s 候选数量错误: %d", id, got)
+		}
+	}
+}
+
+func TestFanguoTitleKeyDedupes(t *testing.T) {
+	same := []string{"冰之城墙 第二季", "冰之城墙第二季", "冰之城墙（第二季）", "冰之城墙 第二 季"}
+	key := fanguoTitleKey(same[0])
+	for _, title := range same[1:] {
+		if fanguoTitleKey(title) != key {
+			t.Fatalf("标题未归一到同键: %q vs %q", title, same[0])
+		}
+	}
+	if fanguoTitleKey("海贼王") == fanguoTitleKey("航海王") {
+		t.Fatal("不同标题被误合并")
 	}
 }

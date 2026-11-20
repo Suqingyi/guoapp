@@ -18,7 +18,7 @@ void main() {
     SharedPreferences.setMockInitialValues({'source': 'huangdou'});
     final store = testStore(await SharedPreferences.getInstance());
     expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
-    // 默认只显示红果、韩小圈、鬼片网与青空次元，其余站源需要密码解锁。
+    // 默认只显示红果、韩小圈、鬼片网与番果，其余站源需要密码解锁。
     expect(store.sources.length, allSourcesEnabled ? 4 : 1);
     expect(
       SourceSite.values.any((source) => source.id == 'dsd'),

@@ -39,15 +39,13 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.YeguoURL, yeguoBaseURL
 	case sourceDSD:
 		configured, fallback = d.cfg.DSDURL, dsdBaseURL
-	case sourceSorani:
-		configured, fallback = d.cfg.SoraniURL, soraniSiteBaseURL
 	case sourceGuipian:
 		configured, fallback = d.cfg.GuipianURL, guipianSiteBaseURL
 	case sourceHanxiaoquan:
 		configured, fallback = d.cfg.HanxiaoquanURL, hanxiaoquanSiteBaseURL
 	case sourceFanguo:
 		configured = d.cfg.FanguoURL
-		fallback = fanguoAPIBases[0]
+		fallback = fanguoMirrors[0].base
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -78,8 +76,6 @@ func providerSourceForURL(raw string) string {
 		return sourceYeguo
 	case host == "dsd.com.se" || host == "www.dsd.com.se":
 		return sourceDSD
-	case host == "sorani.net" || host == "www.sorani.net" || host == "api.sorani.cc" || host == "sorani.cc":
-		return sourceSorani
 	case host == "guipianwu.com" || host == "www.guipianwu.com":
 		return sourceGuipian
 	case host == "jennyhow.com" || host == "www.jennyhow.com":
@@ -137,9 +133,6 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceDSD {
 		return d.resolveDSDMedia(ctx, task)
-	}
-	if chapter.Source == sourceSorani {
-		return d.resolveSoraniMedia(ctx, task)
 	}
 	if chapter.Source == sourceGuipian {
 		return d.resolveGuipianMedia(ctx, task)

@@ -34,9 +34,32 @@ const (
 	fanguoPageSize   = 30
 )
 
-var fanguoAPIBases = []string{
-	"https://jszyapi.com/api.php/provide/vod",
-	"https://www.hongniuzy2.com/api.php/provide/vod",
+// fanguoMirror 是一个采集镜像：基础地址 + 规范分类到该镜像原生 t 的映射。
+// 三个镜像实测（2026-11）：极速与红牛同源，樱花为独立源且日番最全。
+type fanguoMirror struct {
+	base       string
+	categories map[string]string
+}
+
+var fanguoMirrors = []fanguoMirror{
+	{"https://jszyapi.com/api.php/provide/vod", map[string]string{"cn": "24", "jp": "25", "us": "26"}},
+	{"https://www.hongniuzy2.com/api.php/provide/vod", map[string]string{"cn": "36", "jp": "37", "us": "38"}},
+	{"https://yhzy.cc/api.php/provide/vod", map[string]string{"cn": "30", "jp": "31", "us": "32"}},
+}
+
+// fanguoCategoryNames 是对外展示的规范分类，顺序即界面顺序。
+var fanguoCategoryNames = []nativeCategory{
+	{ID: "jp", Name: "日本动漫"},
+	{ID: "cn", Name: "国产动漫"},
+	{ID: "us", Name: "欧美动漫"},
+}
+
+func fanguoAPIBases() []string {
+	out := make([]string, 0, len(fanguoMirrors))
+	for _, mirror := range fanguoMirrors {
+		out = append(out, mirror.base)
+	}
+	return out
 }
 
 var (
@@ -58,8 +81,47 @@ func validFanguoCategory(category string) bool {
 	if category == "" {
 		return true
 	}
+	for _, entry := range fanguoCategoryNames {
+		if entry.ID == category {
+			return true
+		}
+	}
 	number, err := strconv.Atoi(category)
 	return err == nil && number > 0 && number <= 100000
+}
+
+// leadingYear 从日期文本开头提取四位年份。
+func leadingYear(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 4 {
+		return ""
+	}
+	digits := value[:4]
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	year, err := strconv.Atoi(digits)
+	if err != nil || year < 1900 || year > 2200 {
+		return ""
+	}
+	return digits
+}
+
+// fanguoTitleKey 归一标题用于同页去重：去空白、括号与季部篇后缀差异。
+func fanguoTitleKey(title string) string {
+	title = strings.ToLower(fanguoStripTags(title))
+	var builder strings.Builder
+	for _, r := range title {
+		switch r {
+		case ' ', '\t', '（', '）', '(', ')', '【', '】', '[', ']', '·', '-', '_', '第', '季', '部', '篇', '：', ':', ',', '，':
+			continue
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 func fanguoStripTags(value string) string {
@@ -73,36 +135,7 @@ func fanguoPlayURL(raw string) string {
 	return ""
 }
 
-// fanguoBaseCandidates 把记住的有效域名排在最前。
-func (d *Downloader) fanguoBaseCandidates() []string {
-	d.providerMu.Lock()
-	preferred := d.providerHosts[sourceFanguo]
-	d.providerMu.Unlock()
-	candidates := make([]string, 0, len(fanguoAPIBases)+1)
-	seen := map[string]bool{}
-	add := func(entry string) {
-		if entry != "" && !seen[entry] {
-			seen[entry] = true
-			candidates = append(candidates, entry)
-		}
-	}
-	if preferred != "" {
-		if parsed, err := url.Parse(preferred); err == nil {
-			for _, entry := range fanguoAPIBases {
-				base, baseErr := url.Parse(entry)
-				if baseErr == nil && strings.EqualFold(base.Host, parsed.Host) {
-					add(entry)
-				}
-			}
-		}
-	}
-	for _, entry := range fanguoAPIBases {
-		add(entry)
-	}
-	return candidates
-}
-
-func (d *Downloader) fanguoGet(ctx context.Context, query url.Values, limit int64) (any, error) {
+func (d *Downloader) fanguoGet(ctx context.Context, category string, queryFor func(mirror fanguoMirror) url.Values, limit int64) (any, error) {
 	if limit <= 0 {
 		limit = 16 << 20
 	}
@@ -110,18 +143,19 @@ func (d *Downloader) fanguoGet(ctx context.Context, query url.Values, limit int6
 	if background, _ := ctx.Value(backgroundCatalogKey{}).(bool); background {
 		timeout = 8 * time.Second
 	}
+	mirrors := d.fanguoMirrorCandidates(category)
 	var lastErr error
 	tried := 0
-	for _, base := range d.fanguoBaseCandidates() {
+	for _, mirror := range mirrors {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		tried++
 		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-		value, err := d.fanguoGetOnce(attemptCtx, base, query, limit)
+		value, err := d.fanguoGetOnce(attemptCtx, mirror.base, queryFor(mirror), limit)
 		cancel()
 		if err == nil {
-			if parsed, parseErr := url.Parse(base); parseErr == nil {
+			if parsed, parseErr := url.Parse(mirror.base); parseErr == nil {
 				d.providerMu.Lock()
 				d.providerHosts[sourceFanguo] = parsed.Scheme + "://" + parsed.Host
 				d.providerMu.Unlock()
@@ -141,6 +175,57 @@ func (d *Downloader) fanguoGet(ctx context.Context, query url.Values, limit int6
 		return nil, fmt.Errorf("番果来源请求失败：已尝试 %d 个域名，最后错误：%w", tried, publicError(lastErr))
 	}
 	return nil, lastErr
+}
+
+// fanguoMirrorCandidates 把记住的有效镜像排最前；分类在该镜像无映射时跳过它。
+func (d *Downloader) fanguoMirrorCandidates(category string) []fanguoMirror {
+	d.providerMu.Lock()
+	preferred := d.providerHosts[sourceFanguo]
+	d.providerMu.Unlock()
+	preferredHost := ""
+	if parsed, err := url.Parse(preferred); err == nil {
+		preferredHost = strings.ToLower(parsed.Host)
+	}
+	mirrors := make([]fanguoMirror, 0, len(fanguoMirrors))
+	if preferredHost != "" {
+		for _, mirror := range fanguoMirrors {
+			if base, err := url.Parse(mirror.base); err == nil && strings.EqualFold(base.Host, preferredHost) {
+				mirrors = append(mirrors, mirror)
+			}
+		}
+	}
+	for _, mirror := range fanguoMirrors {
+		already := false
+		for _, entry := range mirrors {
+			if entry.base == mirror.base {
+				already = true
+			}
+		}
+		if !already {
+			mirrors = append(mirrors, mirror)
+		}
+	}
+	if category != "" {
+		usable := make([]fanguoMirror, 0, len(mirrors))
+		for _, mirror := range mirrors {
+			if _, ok := mirror.categories[category]; ok || !isCanonicalFanguoCategory(category) {
+				usable = append(usable, mirror)
+			}
+		}
+		if len(usable) > 0 {
+			mirrors = usable
+		}
+	}
+	return mirrors
+}
+
+func isCanonicalFanguoCategory(category string) bool {
+	for _, entry := range fanguoCategoryNames {
+		if entry.ID == category {
+			return true
+		}
+	}
+	return false
 }
 
 type fanguoAPIError struct {
@@ -241,7 +326,7 @@ func fanguoDramaFromMap(row map[string]any) (Drama, error) {
 		return Drama{}, errors.New("番果返回的剧集信息不完整")
 	}
 	description := truncate(fanguoStripTags(mapString(row, "vod_blurb", "vod_content")), 12000)
-	cover := providerCoverAddress(row["vod_pic"], fanguoAPIBases[0]+"/")
+	cover := providerCoverAddress(row["vod_pic"], fanguoMirrors[0].base+"/")
 	episodes := 0
 	if total, err := strconv.Atoi(strings.TrimSpace(mapString(row, "vod_total"))); err == nil && total > episodes && total <= 100000 {
 		episodes = total
@@ -290,48 +375,10 @@ func fanguoDramaFromMap(row map[string]any) (Drama, error) {
 	}, nil
 }
 
+// fetchFanguoCategories 返回固定规范分类：各镜像 t 不同，剧集 ID 也不互通，
+// 因此对外只用规范 ID，由 fanguoMirrorCandidates 映射到当前镜像。
 func (d *Downloader) fetchFanguoCategories(ctx context.Context) ([]nativeCategory, error) {
-	value, err := d.fanguoGet(ctx, url.Values{"ac": {"list"}}, 4<<20)
-	if err != nil {
-		return nil, err
-	}
-	root, _ := value.(map[string]any)
-	if root == nil {
-		return nil, errors.New("番果分类数据格式无效")
-	}
-	rows, _ := root["class"].([]any)
-	if len(rows) == 0 || len(rows) > 256 {
-		return nil, errors.New("番果未返回有效分类")
-	}
-	entries := make([]nativeCategory, 0, len(rows))
-	seen := map[string]bool{}
-	for _, entry := range rows {
-		row, _ := entry.(map[string]any)
-		id := mapString(row, "type_id")
-		name := strings.TrimSpace(mapString(row, "type_name"))
-		if !fanguoNumericID(id) || name == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		entries = append(entries, nativeCategory{ID: id, Name: truncate(name, 48)})
-	}
-	// 采集站混杂影视分类，仅保留动漫相关分类；识别不到关键词时保留全部。
-	trimmed := make([]nativeCategory, 0, len(entries))
-	for _, entry := range entries {
-		if strings.ContainsAny(entry.Name, "动漫番国创剧场OVAova") {
-			trimmed = append(trimmed, entry)
-		}
-	}
-	if len(trimmed) > 0 {
-		entries = trimmed
-	}
-	if len(entries) == 0 {
-		return nil, errors.New("番果未返回有效分类")
-	}
-	if len(entries) > 16 {
-		entries = entries[:16]
-	}
-	return entries, nil
+	return append([]nativeCategory(nil), fanguoCategoryNames...), nil
 }
 
 func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
@@ -344,13 +391,17 @@ func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, categ
 	if query == "" && !validFanguoCategory(category) {
 		return nil, false, errors.New("番果内容分类无效")
 	}
-	values := url.Values{"ac": {"videolist"}, "pg": {strconv.Itoa(page)}, "limit": {strconv.Itoa(fanguoPageSize)}}
-	if query != "" {
-		values.Set("wd", query)
-	} else if category != "" {
-		values.Set("t", category)
-	}
-	value, err := d.fanguoGet(ctx, values, 16<<20)
+	value, err := d.fanguoGet(ctx, category, func(mirror fanguoMirror) url.Values {
+		values := url.Values{"ac": {"videolist"}, "pg": {strconv.Itoa(page)}, "limit": {strconv.Itoa(fanguoPageSize)}}
+		if query != "" {
+			values.Set("wd", query)
+		} else if entry, ok := mirror.categories[category]; ok {
+			values.Set("t", entry)
+		} else if category != "" {
+			values.Set("t", category)
+		}
+		return values
+	}, 16<<20)
 	if err != nil {
 		return nil, false, err
 	}
@@ -368,6 +419,8 @@ func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, categ
 	}
 	items := make([]Drama, 0, len(rows))
 	seen := map[string]bool{}
+	byTitle := map[string]int{}
+	episodeCounts := make([]int, 0, len(rows))
 	for _, entry := range rows {
 		row, _ := entry.(map[string]any)
 		drama, err := fanguoDramaFromMap(row)
@@ -378,7 +431,19 @@ func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, categ
 			continue
 		}
 		seen[drama.ID] = true
+		key := fanguoTitleKey(drama.Title)
+		count, _ := strconv.Atoi(nativeText(drama.EpisodeCount))
+		if index, ok := byTitle[key]; ok {
+			// 同一部剧被采集站拆成多条时，只保留集数更多的一条。
+			if count > episodeCounts[index] {
+				items[index] = drama
+				episodeCounts[index] = count
+			}
+			continue
+		}
+		byTitle[key] = len(items)
 		items = append(items, drama)
+		episodeCounts = append(episodeCounts, count)
 	}
 	if len(items) == 0 && hasMore {
 		return nil, false, errors.New("番果未返回应有的目录页，请重试")
@@ -386,22 +451,22 @@ func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, categ
 	return items, hasMore, nil
 }
 
-// fanguoPickLine 优先选择名称含 m3u8 的线路，其次第一条有内容的线路。
+// fanguoPickLine 选集数最全的线路；集数相同时优先名称含 m3u8 的直连线。
 func fanguoPickLine(from []string, groups []string) (int, []string) {
-	fallback := -1
+	best, bestCount := -1, 0
 	for index := range groups {
 		if groups[index] == "" {
 			continue
 		}
-		if index < len(from) && strings.Contains(strings.ToLower(from[index]), "m3u8") {
-			return index, strings.Split(groups[index], ",")
-		}
-		if fallback < 0 {
-			fallback = index
+		count := len(strings.Split(groups[index], ","))
+		preferred := index < len(from) && strings.Contains(strings.ToLower(from[index]), "m3u8")
+		if count > bestCount || (count == bestCount && best >= 0 && preferred &&
+			(best >= len(from) || !strings.Contains(strings.ToLower(from[best]), "m3u8"))) {
+			best, bestCount = index, count
 		}
 	}
-	if fallback >= 0 {
-		return fallback, strings.Split(groups[fallback], ",")
+	if best >= 0 {
+		return best, strings.Split(groups[best], ",")
 	}
 	return 0, nil
 }
@@ -470,7 +535,9 @@ func (d *Downloader) fetchFanguoDetail(ctx context.Context, sourceID string) (Dr
 	if !fanguoNumericID(sourceID) {
 		return Drama{}, nil, errors.New("番果剧集 ID 无效")
 	}
-	value, err := d.fanguoGet(ctx, url.Values{"ac": {"videolist"}, "ids": {sourceID}}, 16<<20)
+	value, err := d.fanguoGet(ctx, "", func(fanguoMirror) url.Values {
+		return url.Values{"ac": {"videolist"}, "ids": {sourceID}}
+	}, 16<<20)
 	if err != nil {
 		return Drama{}, nil, err
 	}
