@@ -41,10 +41,13 @@ type fanguoMirror struct {
 	categories map[string]string
 }
 
+// 顺序即优先级：红牛的播放列表为单一域名的连续流（无 EXT-X-DISCONTINUITY，片头不插广告）；
+// 樱花在片头注入独立广告分片，会使正片整体延后、压制字幕时间轴错位；
+// 极速的采集接口可达但视频 CDN 已拒绝连接，命中后会报播放列表读取失败。
 var fanguoMirrors = []fanguoMirror{
-	{"https://jszyapi.com/api.php/provide/vod", map[string]string{"cn": "24", "jp": "25", "us": "26"}},
 	{"https://www.hongniuzy2.com/api.php/provide/vod", map[string]string{"cn": "36", "jp": "37", "us": "38"}},
 	{"https://yhzy.cc/api.php/provide/vod", map[string]string{"cn": "30", "jp": "31", "us": "32"}},
+	{"https://jszyapi.com/api.php/provide/vod", map[string]string{"cn": "24", "jp": "25", "us": "26"}},
 }
 
 // fanguoCategoryNames 是对外展示的规范分类，顺序即界面顺序。
@@ -443,6 +446,14 @@ func (d *Downloader) fetchFanguoCatalogPage(ctx context.Context, page int, categ
 	return items, hasMore, nil
 }
 
+// fanguoSplitEntries 按 MacCMS 的 # 分隔线路内分集，兼容个别部署改用逗号的情况。
+func fanguoSplitEntries(group string) []string {
+	if entries := strings.Split(group, "#"); len(entries) > 1 {
+		return entries
+	}
+	return strings.Split(group, ",")
+}
+
 // fanguoPickLine 选集数最全的线路；集数相同时优先名称含 m3u8 的直连线。
 func fanguoPickLine(from []string, groups []string) (int, []string) {
 	best, bestCount := -1, 0
@@ -450,7 +461,7 @@ func fanguoPickLine(from []string, groups []string) (int, []string) {
 		if groups[index] == "" {
 			continue
 		}
-		count := len(strings.Split(groups[index], ","))
+		count := len(fanguoSplitEntries(groups[index]))
 		preferred := index < len(from) && strings.Contains(strings.ToLower(from[index]), "m3u8")
 		if count > bestCount || (count == bestCount && best >= 0 && preferred &&
 			(best >= len(from) || !strings.Contains(strings.ToLower(from[best]), "m3u8"))) {
@@ -458,7 +469,7 @@ func fanguoPickLine(from []string, groups []string) (int, []string) {
 		}
 	}
 	if best >= 0 {
-		return best, strings.Split(groups[best], ",")
+		return best, fanguoSplitEntries(groups[best])
 	}
 	return 0, nil
 }

@@ -77,12 +77,13 @@ func TestFanguoCategoryAndIDGuards(t *testing.T) {
 }
 
 func TestFanguoMirrorCandidatesDedupesPreferred(t *testing.T) {
-	d := &Downloader{providerHosts: map[string]string{sourceFanguo: "https://www.hongniuzy2.com"}}
+	d := &Downloader{providerHosts: map[string]string{sourceFanguo: "https://yhzy.cc"}}
 	candidates := d.fanguoMirrorCandidates("")
 	if len(candidates) != len(fanguoMirrors) {
 		t.Fatalf("候选数量错误: %v", candidates)
 	}
-	if candidates[0].base != fanguoMirrors[1].base {
+	// yhzy.cc 在默认顺序中并非首位，排到首位才证明记住了有效镜像。
+	if candidates[0].base != "https://yhzy.cc/api.php/provide/vod" {
 		t.Fatalf("有效镜像未排首位: %v", candidates)
 	}
 	seen := map[string]bool{}
