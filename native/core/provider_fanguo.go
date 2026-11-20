@@ -54,14 +54,6 @@ var fanguoCategoryNames = []nativeCategory{
 	{ID: "us", Name: "欧美动漫"},
 }
 
-func fanguoAPIBases() []string {
-	out := make([]string, 0, len(fanguoMirrors))
-	for _, mirror := range fanguoMirrors {
-		out = append(out, mirror.base)
-	}
-	return out
-}
-
 var (
 	reFanguoTag     = regexp.MustCompile(`<[^>]*>`)
 	reFanguoM3U8URL = regexp.MustCompile(`(?i)https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*`)
